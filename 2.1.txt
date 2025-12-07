@@ -1,0 +1,197 @@
+import requests
+import json
+from collections import Counter
+from time import sleep
+
+
+class VKGroupAnalyzer:
+    def __init__(self, token, group_id):
+        self.token = token
+        self.group_id = group_id
+        self.base_url = 'https://api.vk.com/method/'
+        self.version = '5.199'
+        self.all_members = []
+
+    def make_request(self, method, params):
+        """Выполняет запрос к API VK"""
+        params.update({
+            'access_token': self.token,
+            'v': self.version
+        })
+
+        try:
+            response = requests.post(f"{self.base_url}{method}", data=params)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"Ошибка подключения: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            print(f"Ошибка парсинга JSON: {e}")
+            return None
+
+    def get_total_members(self):
+        """Получает общее количество участников группы"""
+        params = {
+            'group_id': self.group_id,
+            'count': 1
+        }
+
+        data = self.make_request('groups.getMembers', params)
+
+        if data and 'response' in data:
+            total_count = data['response']['count']
+            print(f"Всего участников: {total_count}")
+            return total_count
+        else:
+            print(f"Ошибка при получении количества участников: {data}")
+            return 0
+
+    def fetch_all_members(self):
+        """Загружает всех участников группы"""
+        total_count = self.get_total_members()
+        if not total_count:
+            return False
+
+        offset = 0
+        batch_size = 1000  # максимум за один запрос
+
+        while offset < total_count:
+            print(f"Загрузка участников {offset + 1}-{min(offset + batch_size, total_count)} из {total_count}")
+
+            params = {
+                'group_id': self.group_id,
+                'count': batch_size,
+                'offset': offset,
+                'fields': 'online,sex,city,universities'
+            }
+
+            data = self.make_request('groups.getMembers', params)
+
+            if not data:
+                return False
+
+            if 'response' in data:
+                batch_members = data['response']['items']
+                self.all_members.extend(batch_members)
+                offset += len(batch_members)
+
+                # Добавляем небольшую задержку, чтобы не превысить лимиты API
+                sleep(0.1)
+            else:
+                print(f"Ошибка API: {data}")
+                return False
+
+        print(f"\nУспешно загружено {len(self.all_members)} участников")
+        return True
+
+    def analyze_members(self):
+        """Анализирует данные участников"""
+        if not self.all_members:
+            print("Нет данных для анализа")
+            return
+
+        # Анализ по полу
+        sex_stats = Counter(m.get('sex', 0) for m in self.all_members)
+        sex_labels = {0: 'Не указан', 1: 'Женщины', 2: 'Мужчины'}
+
+        # Онлайн статус
+        online_count = sum(1 for m in self.all_members if m.get('online') == 1)
+
+        # Распределение по городам
+        cities = Counter(
+            m['city']['title'] for m in self.all_members
+            if 'city' in m and 'title' in m['city']
+        )
+
+        # Распределение по университетам
+        universities = Counter()
+        for m in self.all_members:
+            if 'universities' in m and isinstance(m['universities'], list):
+                for uni in m['universities']:
+                    name = uni.get('name')
+                    if name:
+                        universities[name] += 1
+            else:
+                universities['Не указано'] += 1
+
+        # Вывод результатов
+        print("\n" + "=" * 50)
+        print("СТАТИСТИКА ГРУППЫ")
+        print("=" * 50)
+
+        print("\n--- Распределение по полу ---")
+        for sex_code, count in sorted(sex_stats.items()):
+            label = sex_labels.get(sex_code, f'Код {sex_code}')
+            percentage = (count / len(self.all_members)) * 100
+            print(f"{label}: {count} ({percentage:.1f}%)")
+
+        print(f"\n--- Онлайн статус ---")
+        online_percentage = (online_count / len(self.all_members)) * 100
+        print(f"Онлайн: {online_count} ({online_percentage:.1f}%)")
+        print(f"Офлайн: {len(self.all_members) - online_count}")
+
+        print(f"\n--- Топ-10 городов ---")
+        for city, count in cities.most_common(10):
+            percentage = (count / len(self.all_members)) * 100
+            print(f"  {city}: {count} ({percentage:.1f}%)")
+
+        print(f"\n--- Топ-10 университетов ---")
+        for uni, count in universities.most_common(10):
+            percentage = (count / len(self.all_members)) * 100
+            print(f"  {uni}: {count} ({percentage:.1f}%)")
+
+        print(f"\n--- Общая статистика ---")
+        print(f"Всего обработано анкет: {len(self.all_members)}")
+
+        # Сохранение результатов в файл
+        self.save_results(sex_stats, sex_labels, online_count, cities, universities)
+
+    def save_results(self, sex_stats, sex_labels, online_count, cities, universities):
+        """Сохраняет результаты анализа в файл"""
+        results = {
+            'total_members': len(self.all_members),
+            'sex_distribution': {sex_labels.get(k, k): v for k, v in sex_stats.items()},
+            'online_count': online_count,
+            'top_cities': dict(cities.most_common(20)),
+            'top_universities': dict(universities.most_common(20)),
+            'sample_members': self.all_members[:5] if self.all_members else []
+        }
+
+        try:
+            with open(f'vk_group_{self.group_id}_analysis.json', 'w', encoding='utf-8') as f:
+                json.dump(results, f, ensure_ascii=False, indent=2)
+            print(f"\nРезультаты сохранены в файл: vk_group_{self.group_id}_analysis.json")
+        except Exception as e:
+            print(f"Ошибка при сохранении файла: {e}")
+
+    def show_sample_data(self):
+        """Показывает пример данных участников"""
+        if self.all_members:
+            print("\n" + "=" * 50)
+            print("ПРИМЕР ДАННЫХ УЧАСТНИКОВ (первые 5 записей)")
+            print("=" * 50)
+            print(json.dumps(self.all_members[:5], ensure_ascii=False, indent=2))
+
+
+def main():
+    # Конфигурация
+    TOKEN = '05bfc73705bfc73705bfc737e9068596ec005bf05bfc7376d752748a6794a7ce88d7d35'
+    GROUP_ID = 'sdtrussia'
+
+    # Создаем экземпляр анализатора
+    analyzer = VKGroupAnalyzer(TOKEN, GROUP_ID)
+
+    # Загружаем данные
+    if analyzer.fetch_all_members():
+        # Показываем пример данных
+        analyzer.show_sample_data()
+
+        # Анализируем данные
+        analyzer.analyze_members()
+    else:
+        print("Не удалось загрузить данные участников")
+
+
+if __name__ == "__main__":
+    main()
