@@ -1,0 +1,312 @@
+import requests
+import json
+import time
+import os
+import re
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+import logging
+
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('vacancy_parser.log', encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+# Конфигурация
+class Config:
+    BASE_URL = 'https://api.hh.ru/vacancies'
+    SEARCH_TEXT = 'Программист'
+    SEARCH_AREA = 1  # Москва
+    PER_PAGE = 100
+    MAX_PAGES = 4
+    REQUEST_DELAY = 0.2
+    VACANCY_DELAY = 0.25
+    TIMEOUT = 10
+
+    # Ключевые слова для фильтрации
+    RESUME_KEYWORDS = [
+        'Машинное обучение', 'machine learning',
+        'Аналитика', 'Analitic',
+        'База данных', 'data scince',
+        'MySQL', 'Python', 'Питон'
+    ]
+
+
+class HHAPIClient:
+    """Клиент для работы с API HeadHunter"""
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.session = requests.Session()
+        self.session.headers.update({
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        })
+
+    def get_page(self, page: int = 0) -> Optional[Dict[str, Any]]:
+        """Получение страницы с вакансиями"""
+        params = {
+            'text': f'NAME:{self.config.SEARCH_TEXT}',
+            'area': self.config.SEARCH_AREA,
+            'page': page,
+            'per_page': self.config.PER_PAGE
+        }
+
+        try:
+            response = self.session.get(
+                self.config.BASE_URL,
+                params=params,
+                timeout=self.config.TIMEOUT
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Ошибка при запросе страницы {page}: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            logger.error(f"Ошибка парсинга JSON на странице {page}: {e}")
+            return None
+
+    def get_vacancy_details(self, vacancy_url: str) -> Optional[Dict[str, Any]]:
+        """Получение детальной информации по вакансии"""
+        try:
+            response = self.session.get(
+                vacancy_url,
+                timeout=self.config.TIMEOUT
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Ошибка при запросе вакансии {vacancy_url}: {e}")
+            return None
+
+
+class VacancyProcessor:
+    """Обработчик вакансий"""
+
+    def __init__(self, keywords: List[str]):
+        self.keywords = [kw.lower() for kw in keywords]
+
+    @staticmethod
+    def clean_html(text: str) -> str:
+        """Очистка HTML тегов из текста"""
+        if not text:
+            return ""
+        return re.sub(r'<[^<]+?>', ' ', text)
+
+    def contains_keywords(self, description: str) -> Dict[str, Any]:
+        """Проверка наличия ключевых слов в описании"""
+        if not description:
+            return {'found': False, 'keywords': []}
+
+        clean_text = self.clean_html(description).lower()
+        found_keywords = []
+
+        for keyword in self.keywords:
+            if keyword in clean_text:
+                found_keywords.append(keyword)
+
+        return {
+            'found': len(found_keywords) > 0,
+            'keywords': found_keywords
+        }
+
+
+class DataManager:
+    """Менеджер для работы с файлами"""
+
+    def __init__(self):
+        self.base_dir = Path.cwd()
+        self.pagination_dir = self.base_dir / "pagination_desc"
+        self.vacancies_dir = self.base_dir / "vacancies_desc"
+
+        self._create_directories()
+
+    def _create_directories(self):
+        """Создание необходимых директорий"""
+        self.pagination_dir.mkdir(exist_ok=True)
+        self.vacancies_dir.mkdir(exist_ok=True)
+
+    def save_page(self, page_number: int, data: Dict[str, Any]):
+        """Сохранение страницы с вакансиями"""
+        file_path = self.pagination_dir / f"page_{page_number}.json"
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            logger.info(f"Сохранена страница {page_number}")
+        except IOError as e:
+            logger.error(f"Ошибка сохранения страницы {page_number}: {e}")
+
+    def save_vacancy(self, vacancy_id: str, data: Dict[str, Any]):
+        """Сохранение вакансии"""
+        file_path = self.vacancies_dir / f"{vacancy_id}.json"
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except IOError as e:
+            logger.error(f"Ошибка сохранения вакансии {vacancy_id}: {e}")
+
+
+class VacancyParser:
+    """Основной парсер вакансий"""
+
+    def __init__(self):
+        self.config = Config()
+        self.api_client = HHAPIClient(self.config)
+        self.processor = VacancyProcessor(self.config.RESUME_KEYWORDS)
+        self.data_manager = DataManager()
+
+        self.stats = {
+            'total_vacancies': 0,
+            'matched_vacancies': 0,
+            'processed_pages': 0,
+            'errors': 0,
+            'start_time': None,
+            'end_time': None
+        }
+
+    def collect_pages(self) -> bool:
+        """Сбор страниц с вакансиями"""
+        logger.info("Начинаем сбор страниц с вакансиями...")
+
+        for page in range(self.config.MAX_PAGES):
+            try:
+                page_data = self.api_client.get_page(page)
+
+                if not page_data:
+                    self.stats['errors'] += 1
+                    continue
+
+                # Сохраняем страницу
+                self.data_manager.save_page(page, page_data)
+                self.stats['processed_pages'] += 1
+
+                # Проверка на последнюю страницу
+                total_pages = page_data.get('pages', 0)
+                if page >= total_pages - 1:
+                    logger.info(f"Достигнута последняя страница. Всего страниц: {total_pages}")
+                    break
+
+                # Задержка между запросами
+                time.sleep(self.config.REQUEST_DELAY)
+
+            except Exception as e:
+                logger.error(f"Критическая ошибка на странице {page}: {e}")
+                self.stats['errors'] += 1
+                return False
+
+        logger.info(f"Собрано страниц: {self.stats['processed_pages']}")
+        return True
+
+    def process_vacancies(self):
+        """Обработка вакансий из сохраненных страниц"""
+        logger.info("Начинаем обработку вакансий...")
+
+        for page_file in self.data_manager.pagination_dir.glob("*.json"):
+            try:
+                with open(page_file, 'r', encoding='utf-8') as f:
+                    page_data = json.load(f)
+
+                vacancies = page_data.get('items', [])
+
+                for vacancy in vacancies:
+                    self.stats['total_vacancies'] += 1
+
+                    # Получаем детальную информацию о вакансии
+                    vacancy_details = self.api_client.get_vacancy_details(
+                        vacancy.get('url', '')
+                    )
+
+                    if not vacancy_details:
+                        continue
+
+                    # Проверяем ключевые слова
+                    description = vacancy_details.get('description', '')
+                    keyword_check = self.processor.contains_keywords(description)
+
+                    if keyword_check['found']:
+                        self.stats['matched_vacancies'] += 1
+
+                        # Сохраняем подходящую вакансию
+                        self.data_manager.save_vacancy(
+                            vacancy.get('id', 'unknown'),
+                            vacancy_details
+                        )
+
+                        logger.info(
+                            f"Найдена подходящая вакансия: {vacancy.get('name', 'Неизвестно')} | "
+                            f"Ключевые слова: {', '.join(keyword_check['keywords'])}"
+                        )
+
+                    # Задержка между запросами вакансий
+                    time.sleep(self.config.VACANCY_DELAY)
+
+            except Exception as e:
+                logger.error(f"Ошибка при обработке файла {page_file}: {e}")
+                self.stats['errors'] += 1
+                continue
+
+    def print_statistics(self):
+        """Вывод статистики"""
+        duration = self.stats['end_time'] - self.stats['start_time']
+
+        print("\n" + "=" * 50)
+        print("СТАТИСТИКА СБОРА ВАКАНСИЙ")
+        print("=" * 50)
+        print(f"Время начала: {self.stats['start_time']}")
+        print(f"Время окончания: {self.stats['end_time']}")
+        print(f"Общее время: {duration:.2f} секунд")
+        print(f"Обработано страниц: {self.stats['processed_pages']}")
+        print(f"Всего вакансий: {self.stats['total_vacancies']}")
+        print(f"Найдено подходящих: {self.stats['matched_vacancies']}")
+        print(f"Процент подходящих: {(self.stats['matched_vacancies'] / self.stats['total_vacancies'] * 100):.1f}%" if
+              self.stats['total_vacancies'] > 0 else "0%")
+        print(f"Ошибок: {self.stats['errors']}")
+        print("=" * 50)
+
+    def run(self):
+        """Основной метод запуска парсера"""
+        self.stats['start_time'] = datetime.now()
+
+        try:
+            # Шаг 1: Собираем страницы
+            if not self.collect_pages():
+                logger.error("Не удалось собрать страницы. Завершаем работу.")
+                return
+
+            # Шаг 2: Обрабатываем вакансии
+            self.process_vacancies()
+
+            self.stats['end_time'] = datetime.now()
+
+            # Шаг 3: Выводим статистику
+            self.print_statistics()
+
+            logger.info("Сбор вакансий успешно завершен!")
+
+        except KeyboardInterrupt:
+            logger.info("Программа остановлена пользователем")
+            self.stats['end_time'] = datetime.now()
+            self.print_statistics()
+        except Exception as e:
+            logger.error(f"Неожиданная ошибка: {e}")
+            self.stats['end_time'] = datetime.now()
+            self.print_statistics()
+            raise
+
+
+def main():
+    """Точка входа в программу"""
+    parser = VacancyParser()
+    parser.run()
+
+
+if __name__ == "__main__":
+    main()
