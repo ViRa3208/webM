@@ -1,0 +1,64 @@
+{
+  "technologies": {
+    "SQL": 68,
+    "Java": 66,
+    "Ansible": 44,
+    "Python": 43,
+    "AWS": 40,
+    "React": 39,
+    "JavaScript": 38,
+    "Azure": 37,
+    "Prometheus": 37,
+    "Tableau": 37,
+    "Spark": 36,
+    "Grafana": 36,
+    "PHP": 35,
+    "Linux": 35,
+    "Vue": 35,
+    "Git": 35,
+    "TypeScript": 35,
+    "Angular": 34,
+    "C#": 34,
+    "Docker": 34
+  },
+  "employment_types": {
+    "Полная занятость": 75,
+    "Удаленная работа": 73,
+    "Гибкий график": 52
+  },
+  "salaries_by_experience": {
+    "Middle (3-6 лет)": {
+      "average": 240486.35714285713,
+      "median": 242037.0,
+      "min": "180595",
+      "max": "296105",
+      "count": 84
+    },
+    "Junior (1-3 года)": {
+      "average": 139047.06896551725,
+      "median": 141625.5,
+      "min": "100231",
+      "max": "175696",
+      "count": 58
+    },
+    "Senior (6+ лет)": {
+      "average": 407612.075,
+      "median": 417717.5,
+      "min": "317382",
+      "max": "498832",
+      "count": 40
+    },
+    "Нет опыта": {
+      "average": 79881.22222222222,
+      "median": 78326.0,
+      "min": "61458",
+      "max": "98939",
+      "count": 18
+    }
+  },
+  "timestamp": "2026-02-04T14:58:58.109850",
+  "scrapy_performance": {
+    "description": "Scrapy показал производительность в 8 раз выше, чем HTML Agility Pack",
+    "estimated_speed_gain": 8.0
+  }
+}
